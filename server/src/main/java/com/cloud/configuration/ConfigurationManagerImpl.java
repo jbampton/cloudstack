@@ -49,6 +49,11 @@ import java.util.stream.Collectors;
 import javax.inject.Inject;
 import javax.naming.ConfigurationException;
 
+import com.cloud.consoleproxy.ConsoleProxyManager;
+import com.cloud.network.router.VirtualNetworkApplianceManager;
+import com.cloud.storage.secondary.SecondaryStorageVmManager;
+import com.cloud.utils.DomainHelper;
+import com.cloud.vm.VirtualMachineManager;
 import org.apache.cloudstack.acl.RoleType;
 import org.apache.cloudstack.acl.SecurityChecker;
 import org.apache.cloudstack.affinity.AffinityGroup;
@@ -150,7 +155,6 @@ import com.cloud.api.query.vo.NetworkOfferingJoinVO;
 import com.cloud.capacity.CapacityManager;
 import com.cloud.capacity.dao.CapacityDao;
 import com.cloud.configuration.Resource.ResourceType;
-import com.cloud.consoleproxy.ConsoleProxyManager;
 import com.cloud.dc.AccountVlanMapVO;
 import com.cloud.dc.ClusterDetailsDao;
 import com.cloud.dc.ClusterDetailsVO;
@@ -245,7 +249,6 @@ import com.cloud.network.dao.UserIpv6AddressDao;
 import com.cloud.network.element.NetrisProviderVO;
 import com.cloud.network.element.NsxProviderVO;
 import com.cloud.network.netris.NetrisService;
-import com.cloud.network.router.VirtualNetworkApplianceManager;
 import com.cloud.network.rules.LoadBalancerContainer.Scheme;
 import com.cloud.network.vpc.VpcManager;
 import com.cloud.offering.DiskOffering;
@@ -280,7 +283,6 @@ import com.cloud.storage.dao.DiskOfferingDao;
 import com.cloud.storage.dao.StoragePoolTagsDao;
 import com.cloud.storage.dao.VMTemplateZoneDao;
 import com.cloud.storage.dao.VolumeDao;
-import com.cloud.storage.secondary.SecondaryStorageVmManager;
 import com.cloud.test.IPRangeConfig;
 import com.cloud.user.Account;
 import com.cloud.user.AccountDetailVO;
@@ -314,7 +316,6 @@ import com.cloud.utils.exception.CloudRuntimeException;
 import com.cloud.utils.net.NetUtils;
 import com.cloud.vm.NicIpAlias;
 import com.cloud.vm.VirtualMachine;
-import com.cloud.vm.VirtualMachineManager;
 import com.cloud.vm.VmDetailConstants;
 import com.cloud.vm.dao.NicIpAliasDao;
 import com.cloud.vm.dao.NicIpAliasVO;
@@ -399,6 +400,8 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
     ClusterDao _clusterDao;
     @Inject
     AlertManager _alertMgr;
+    @Inject
+    DomainHelper domainHelper;
     List<SecurityChecker> _secChecker;
     List<ExternalProvisioner> externalProvisioners;
 
@@ -538,7 +541,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
     public static final ConfigKey<Long> DELETE_QUERY_BATCH_SIZE = new ConfigKey<>("Advanced", Long.class, "delete.query.batch.size", "0",
             "Indicates the limit applied while deleting entries in bulk. With this, the delete query will apply the limit as many times as necessary," +
                     " to delete all the entries. This is advised when retaining several days of records, which can lead to slowness. <= 0 means that no limit will " +
-                    "be applied. Default value is 0. For now, this is used for deletion of vm & volume stats only.", true);
+                    "be applied. Default value is 0. For now, this is used for deletion of VM stats, volume stats, and usage records.", true);
 
     private static final String IOPS_READ_RATE = "IOPS Read";
     private static final String IOPS_WRITE_RATE = "IOPS Write";
@@ -1044,16 +1047,16 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
             category = config.getCategory();
         }
 
+        if (value == null) {
+            throw new InvalidParameterValueException(String.format("The new value for the [%s] configuration must be given.", name));
+        }
+
         validateIpAddressRelatedConfigValues(name, value);
         validateConflictingConfigValue(name, value);
 
         if (CATEGORY_SYSTEM.equals(category) && !_accountMgr.isRootAdmin(caller.getId())) {
             logger.warn("Only Root Admin is allowed to edit the configuration {}", name);
             throw new CloudRuntimeException("Only Root Admin is allowed to edit this configuration.");
-        }
-
-        if (value == null) {
-            return _configDao.findByName(name);
         }
 
         ConfigKey.Scope scope = null;
@@ -3519,7 +3522,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
                                                       final boolean isCustomized, final boolean encryptRoot, Long vgpuProfileId, Integer gpuCount, Boolean gpuDisplay, final boolean purgeResources, Integer leaseDuration, VMLeaseManager.ExpiryAction leaseExpiryAction) {
 
         // Filter child domains when both parent and child domains are present
-        List<Long> filteredDomainIds = filterChildSubDomains(domainIds);
+        List<Long> filteredDomainIds = domainHelper.filterChildSubDomains(domainIds);
 
         // Check if user exists in the system
         final User user = _userDao.findById(userId);
@@ -3647,7 +3650,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
                 _serviceOfferingDetailsDao.saveDetails(detailsVOList);
             }
 
-            CallContext.current().setEventDetails("Service offering id=" + serviceOffering.getId());
+            CallContext.current().setEventDetails("Service offering ID: " + serviceOffering.getUuid());
             CallContext.current().putContextParameter(ServiceOffering.class, serviceOffering.getId());
             return serviceOffering;
         } else {
@@ -3908,7 +3911,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         final Account account = _accountDao.findById(user.getAccountId());
 
         // Filter child domains when both parent and child domains are present
-        List<Long> filteredDomainIds = filterChildSubDomains(domainIds);
+        List<Long> filteredDomainIds = domainHelper.filterChildSubDomains(domainIds);
         Collections.sort(filteredDomainIds);
 
         // avoid domain update of service offering if any instance is associated to it
@@ -4047,7 +4050,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
             }
         }
         offering = _serviceOfferingDao.findById(id);
-        CallContext.current().setEventDetails("Service offering id=" + offering.getId());
+        CallContext.current().setEventDetails("Service offering ID:" + offering.getUuid());
         return offering;
     }
 
@@ -4118,7 +4121,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         }
 
         // Filter child domains when both parent and child domains are present
-        List<Long> filteredDomainIds = filterChildSubDomains(domainIds);
+        List<Long> filteredDomainIds = domainHelper.filterChildSubDomains(domainIds);
 
         // Check if user exists in the system
         final User user = _userDao.findById(userId);
@@ -4163,7 +4166,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         newDiskOffering.setHypervisorSnapshotReserve(hypervisorSnapshotReserve);
         newDiskOffering.setDiskSizeStrictness(diskSizeStrictness);
 
-        CallContext.current().setEventDetails("Disk offering id=" + newDiskOffering.getId());
+        CallContext.current().setEventDetails("Disk offering ID: " + newDiskOffering.getUuid());
         final DiskOfferingVO offering = _diskOfferingDao.persist(newDiskOffering);
         if (offering != null) {
             List<DiskOfferingDetailVO> detailsVO = new ArrayList<>();
@@ -4188,7 +4191,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
             if (!detailsVO.isEmpty()) {
                 diskOfferingDetailsDao.saveDetails(detailsVO);
             }
-            CallContext.current().setEventDetails("Disk offering id=" + newDiskOffering.getId());
+            CallContext.current().setEventDetails("Disk offering ID: " + newDiskOffering.getUuid());
             CallContext.current().putContextParameter(DiskOffering.class, newDiskOffering.getId());
             return offering;
         }
@@ -4394,7 +4397,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         final Account account = _accountDao.findById(user.getAccountId());
 
         // Filter child domains when both parent and child domains are present
-        List<Long> filteredDomainIds = filterChildSubDomains(domainIds);
+        List<Long> filteredDomainIds = domainHelper.filterChildSubDomains(domainIds);
         Collections.sort(filteredDomainIds);
 
         List<Long> filteredZoneIds = new ArrayList<>();
@@ -4463,7 +4466,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
                 diskOfferingDetailsDao.persist(detailVO);
             }
         }
-        CallContext.current().setEventDetails("Disk offering id=" + diskOffering.getId());
+        CallContext.current().setEventDetails("Disk offering ID: " + diskOffering.getUuid());
         return _diskOfferingDao.findById(diskOfferingId);
     }
 
@@ -4721,7 +4724,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         annotationDao.removeByEntityType(AnnotationService.EntityType.DISK_OFFERING.name(), offering.getUuid());
         offering.setState(DiskOffering.State.Inactive);
         if (_diskOfferingDao.update(offering.getId(), offering)) {
-            CallContext.current().setEventDetails("Disk offering id=" + diskOfferingId);
+            CallContext.current().setEventDetails("Disk offering ID: " + offering.getUuid());
             return true;
         } else {
             return false;
@@ -4801,7 +4804,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         }
         offering.setState(ServiceOffering.State.Inactive);
         if (_serviceOfferingDao.update(offeringId, offering)) {
-            CallContext.current().setEventDetails("Service offering id=" + offeringId);
+            CallContext.current().setEventDetails("Service offering ID: " + offering.getUuid());
             return true;
         } else {
             return false;
@@ -6927,7 +6930,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
             offering.setPublicLb(false);
             _networkOfferingDao.update(offering.getId(), offering);
         }
-        CallContext.current().setEventDetails(" Id: " + offering.getId() + " Name: " + name);
+        CallContext.current().setEventDetails(" ID: " + offering.getUuid() + " Name: " + name);
         CallContext.current().putContextParameter(NetworkOffering.class, offering.getId());
         return offering;
     }
@@ -7401,7 +7404,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
                     }
                     if (offering != null) {
                         // Filter child domains when both parent and child domains are present
-                        List<Long> filteredDomainIds = filterChildSubDomains(domainIds);
+                        List<Long> filteredDomainIds = domainHelper.filterChildSubDomains(domainIds);
                         List<NetworkOfferingDetailsVO> detailsVO = new ArrayList<>();
                         for (Long domainId : filteredDomainIds) {
                             detailsVO.add(new NetworkOfferingDetailsVO(offering.getId(), Detail.domainid, String.valueOf(domainId), false));
@@ -7782,7 +7785,6 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
     @ActionEvent(eventType = EventTypes.EVENT_NETWORK_OFFERING_DELETE, eventDescription = "deleting network offering")
     public boolean deleteNetworkOffering(final DeleteNetworkOfferingCmd cmd) {
         final Long offeringId = cmd.getId();
-        CallContext.current().setEventDetails(" Id: " + offeringId);
 
         // Verify network offering id
         final NetworkOfferingVO offering = _networkOfferingDao.findById(offeringId);
@@ -7791,6 +7793,8 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         } else if (offering.getRemoved() != null || offering.isSystemOnly()) {
             throw new InvalidParameterValueException("unable to find network offering " + offeringId);
         }
+
+        CallContext.current().setEventDetails(" ID: " + offering.getUuid());
 
         // Don't allow to delete default network offerings
         if (offering.isDefault() == true) {
@@ -7830,13 +7834,14 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         final String tags = cmd.getTags();
         final List<Long> domainIds = cmd.getDomainIds();
         final List<Long> zoneIds = cmd.getZoneIds();
-        CallContext.current().setEventDetails(" Id: " + id);
 
         // Verify input parameters
         final NetworkOfferingVO offeringToUpdate = _networkOfferingDao.findById(id);
         if (offeringToUpdate == null) {
             throw new InvalidParameterValueException("unable to find network offering " + id);
         }
+
+        CallContext.current().setEventDetails(" ID: " + offeringToUpdate.getUuid());
 
         List<Long> existingDomainIds = networkOfferingDetailsDao.findDomainIds(id);
         Collections.sort(existingDomainIds);
@@ -7867,7 +7872,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         }
 
         // Filter child domains when both parent and child domains are present
-        List<Long> filteredDomainIds = filterChildSubDomains(domainIds);
+        List<Long> filteredDomainIds = domainHelper.filterChildSubDomains(domainIds);
         Collections.sort(filteredDomainIds);
 
         List<Long> filteredZoneIds = new ArrayList<>();
@@ -8042,7 +8047,7 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
         acctForUpdate.setDefaultZoneId(defaultZoneId);
 
         if (_accountDao.update(account.getId(), acctForUpdate)) {
-            CallContext.current().setEventDetails("Default zone id= " + defaultZoneId);
+            CallContext.current().setEventDetails("Default zone ID: " + defaultZoneId);
             return _accountDao.findById(account.getId());
         } else {
             return null;
@@ -8432,30 +8437,6 @@ public class ConfigurationManagerImpl extends ManagerBase implements Configurati
             }
         }
         return false;
-    }
-
-    private List<Long> filterChildSubDomains(final List<Long> domainIds) {
-        List<Long> filteredDomainIds = new ArrayList<>();
-        if (domainIds != null) {
-            filteredDomainIds.addAll(domainIds);
-        }
-        if (filteredDomainIds.size() > 1) {
-            for (int i = filteredDomainIds.size() - 1; i >= 1; i--) {
-                long first = filteredDomainIds.get(i);
-                for (int j = i - 1; j >= 0; j--) {
-                    long second = filteredDomainIds.get(j);
-                    if (_domainDao.isChildDomain(filteredDomainIds.get(i), filteredDomainIds.get(j))) {
-                        filteredDomainIds.remove(j);
-                        i--;
-                    }
-                    if (_domainDao.isChildDomain(filteredDomainIds.get(j), filteredDomainIds.get(i))) {
-                        filteredDomainIds.remove(i);
-                        break;
-                    }
-                }
-            }
-        }
-        return filteredDomainIds;
     }
 
     protected void validateCacheMode(String cacheMode){
